@@ -1,0 +1,158 @@
+import time, os, json, hashlib, argparse
+
+TAMANHO_SETOR = 512 # MBR: 512 bytes
+ASSINATURA_MBR = b"\x55\xAA" # bytes 510-511: 0x55AA
+PASTA_BASE = os.path.abspath(".") # pasta atual do projeto
+
+def agora():
+    return time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())
+
+def hash_sha256(caminho):
+    h = hashlib.sha256()
+    with open(caminho, "rb") as f:
+        for bloco in iter(lambda: f.read(8192), b""):
+            h.update(bloco)
+    return h.hexdigest()
+
+def garantir_estrutura():
+    """Cria a árvore ./SIM/... dentro da pasta do projeto."""
+    caminhos = {
+        "base": PASTA_BASE,
+        "efi": os.path.join(PASTA_BASE, "SIM", "EFI", "Boot"),
+        "drivers": os.path.join(PASTA_BASE, "SIM", "Windows", "System32", "drivers"),
+        "logs": os.path.join(PASTA_BASE, "SIM", "Logs"),
+        "usuario": os.path.join(PASTA_BASE, "SIM", "Users", "Public", "Documents"),
+    }
+    for p in caminhos.values():
+        os.makedirs(p, exist_ok=True)
+    return caminhos
+
+def log(arquivo_log, msg):
+    arquivo_log.write(f"[{agora()}] {msg}\n")
+
+def criar_loader_efi_falso(caminhos, ev):
+    caminho = os.path.join(caminhos["efi"], "bootx64.efi.sim")
+    with open(caminho, "wb") as f:
+        f.write(os.urandom(4096))
+    log(ev, f"Loader EFI simulado criado: {caminho}")
+    return caminho
+
+def criar_mbr_simulado(caminhos, ev):
+    """Cria MBR simulado: exatamente 512 bytes, com assinatura 0x55AA nos bytes finais (510-511)."""
+    caminho = os.path.join(caminhos["efi"], "MBR.bin.sim")
+    buf = bytearray(TAMANHO_SETOR)
+    buf[-2:] = ASSINATURA_MBR
+    with open(caminho, "wb") as f:
+        f.write(buf)
+
+    # validação (tamanho + assinatura)
+    with open(caminho, "rb") as f:
+        dados = f.read()
+    ok_tamanho = (len(dados) == TAMANHO_SETOR)
+    ok_assinatura = (dados[-2:] == ASSINATURA_MBR)
+    status = "OK" if (ok_tamanho and ok_assinatura) else "ERRO"
+    log(ev, f"MBR simulado criado ({status}): {caminho}")
+    return caminho, ok_tamanho, ok_assinatura
+
+def criar_driver_falso(caminhos, ev):
+    caminho = os.path.join(caminhos["drivers"], "simdriver.sys.sim")
+    with open(caminho, "w", encoding="utf-8") as f:
+        f.write("SIMULATION_DRIVER\nNao eh um driver real.\n")
+    log(ev, f"Driver simulado criado: {caminho}")
+    return caminho
+
+def criar_readme(caminhos, ev):
+    caminho = os.path.join(caminhos["base"], "SIM", "README_SIMULATION.txt")
+    with open(caminho, "w", encoding="utf-8") as f:
+        f.write("Simulacao segura.\nMBR = 512 bytes com assinatura 0x55AA.\n")
+    log(ev, f"README criado: {caminho}")
+    return caminho
+
+def criar_arquivos_bloqueados(caminhos, ev, quantidade):
+    artefatos = []
+    for i in range(quantidade):
+        p = os.path.join(caminhos["usuario"], f"documento_{i}.txt")
+        with open(p, "w", encoding="utf-8") as f:
+            f.write("conteudo de exemplo\n")
+        q = p + ".SIMLOCKED"
+        with open(q, "w", encoding="utf-8") as f:
+            f.write("simulacao de copia bloqueada\n")
+        log(ev, f"Arquivo simulado criado: {q}")
+        artefatos.extend([p, q])
+    return artefatos
+
+def ler_assinatura_mbr_hex(caminho_mbr):
+    """Lê os 2 bytes finais do 'MBR' simulado e retorna em HEX maiúsculo (ex.: '55AA')."""
+    with open(caminho_mbr, "rb") as f:
+        f.seek(-2, os.SEEK_END)
+        return f.read(2).hex().upper()
+
+def simular(quantidade_arquivos=10, etapas=("efi","mbr","driver","readme","lock")):
+    caminhos = garantir_estrutura()
+    caminho_eventos = os.path.join(caminhos["logs"], "events.txt")
+    caminho_iocs = os.path.join(caminhos["logs"], "iocs.json")
+    criados = []
+
+    assinatura_mbr_hex = None
+    ok_tamanho = ok_assinatura = True
+
+    with open(caminho_eventos, "w", encoding="utf-8") as ev:
+        log(ev, "Inicio da simulacao segura (pasta do projeto).")
+
+        if "efi" in etapas:
+            criados.append(criar_loader_efi_falso(caminhos, ev))
+
+        if "mbr" in etapas:
+            caminho_mbr, ok_tamanho, ok_assinatura = criar_mbr_simulado(caminhos, ev)
+            assinatura_mbr_hex = ler_assinatura_mbr_hex(caminho_mbr)
+            criados.append(caminho_mbr)
+
+        if "driver" in etapas:
+            criados.append(criar_driver_falso(caminhos, ev))
+
+        if "readme" in etapas:
+            criados.append(criar_readme(caminhos, ev))
+
+        if "lock" in etapas:
+            criados.extend(criar_arquivos_bloqueados(caminhos, ev, quantidade_arquivos))
+
+        # IOCs (inclui assinatura_mbr quando for o arquivo MBR simulado)
+        iocs = []
+        for a in criados:
+            entrada = {"caminho": a, "sha256": hash_sha256(a)}
+            if os.path.basename(a) == "MBR.bin.sim":
+                entrada["assinatura_mbr"] = assinatura_mbr_hex # ex.: "55AA"
+                entrada["tamanho_bytes"] = TAMANHO_SETOR
+            iocs.append(entrada)
+
+        with open(caminho_iocs, "w", encoding="utf-8") as f:
+            json.dump({"gerado_em": agora(), "artefatos": iocs}, f, indent=2, ensure_ascii=False)
+
+        log(ev, "Simulacao concluida.")
+
+    tamanho_total = sum(os.path.getsize(a) for a in criados if os.path.exists(a))
+
+    # ---- Saída de console (inclui assinatura do MBR) ----
+    print("\n[+] Simulacao concluida (SEGURA)")
+    print(f" Eventos : {caminho_eventos}")
+    print(f" IOCs : {caminho_iocs}")
+    if assinatura_mbr_hex:
+        print(f" MBR.sim : 512 bytes = {'OK' if ok_tamanho else 'ERRO'} | assinatura = {assinatura_mbr_hex} ({'OK' if ok_assinatura and assinatura_mbr_hex=='55AA' else 'ERRO'})")
+    print(f" Artefatos: {len(criados)} | Tamanho total: {tamanho_total} bytes\n")
+
+def parsear_etapas(txt):
+    if txt.lower() == "all":
+        return ("efi","mbr","driver","readme","lock")
+    return tuple(p.strip().lower() for p in txt.split(",") if p.strip())
+
+def main():
+    ap = argparse.ArgumentParser(description="Simulacao segura de sinais de bootkit (pasta atual).")
+    ap.add_argument("--arquivos", type=int, default=10, help="Quantidade em 'lock'.")
+    ap.add_argument("--etapas", default="all", help="all ou lista: efi,mbr,driver,readme,lock")
+    args = ap.parse_args()
+
+    etapas = parsear_etapas(args.etapas)
+    simular(quantidade_arquivos=args.arquivos, etapas=etapas)
+
+if __name__ == "__main__":
+    main()
