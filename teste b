@@ -1,192 +1,83 @@
-#!/usr/bin/env python3
-# AVISO: este programa NÃO acessa MBR/UEFI reais. Ele cria APENAS ARQUIVOS dentro da pasta ./SIM
-# para fins de teste de laboratório.
+import pandas as pd
+import re
 
-import os, time, json, hashlib, argparse
+ARQ_IN  = "Blocked_Softwares.xlsx"          # ajuste o nome se precisar
+ABA     = 0                                  # 0 = primeira aba; ou "Sheet1"
+COLPATH = "ori_soft"                          # nome da coluna com o path
 
-# ---------------------------- Constantes ----------------------------
-TAMANHO_SETOR    = 512
-ASSINATURA_FINAL = b"\x55\xAA"         # bytes 510-511
-PASTA_BASE       = os.path.abspath(".")  # pasta atual do projeto
+ARQ_OUT_COMPLETO   = "Blocked_Softwares_Limpo.xlsx"
+ARQ_OUT_UNICOS     = "softwares_unicos.xlsx"
+ARQ_OUT_FREQUENCIA = "softwares_frequencia.xlsx"
 
-# ---------------------------- Utilidades ----------------------------
-def agora():
-    return time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())
+# ===== 1) Ler arquivo =====
+df = pd.read_excel(ARQ_IN, sheet_name=ABA)
 
-def hash_sha256(caminho):
-    h = hashlib.sha256()
-    with open(caminho, "rb") as f:
-        for b in iter(lambda: f.read(8192), b""): h.update(b)
-    return h.hexdigest()
+# Se o cabeçalho estiver diferente, renomeie:
+# df = df.rename(columns={"A": "ori_soft"})
 
-def garantir_estrutura():
-    caminhos = {
-        "base": PASTA_BASE,
-        "efi": os.path.join(PASTA_BASE, "SIM", "EFI", "Boot"),
-        "drivers": os.path.join(PASTA_BASE, "SIM", "Windows", "System32", "drivers"),
-        "logs": os.path.join(PASTA_BASE, "SIM", "Logs"),
-        "usuario": os.path.join(PASTA_BASE, "SIM", "Users", "Public", "Documents"),
-    }
-    for p in caminhos.values(): os.makedirs(p, exist_ok=True)
-    return caminhos
+# ===== 2) Extrair apenas o "software" do fim do path =====
+def extrair_software(s):
+    if pd.isna(s): 
+        return None
+    s = str(s)
+    # limpa chaves e parênteses
+    s = s.replace("{","").replace("}","").replace("(","").replace(")","")
+    s = s.replace("/", "\\")
+    # pega o último trecho após a última barra
+    arquivo = s.split("\\")[-1].strip()
+    # mantém só .exe (opcional) — comente a linha abaixo se quiser todas as extensões
+    if not re.search(r"\.exe$", arquivo, flags=re.I):
+        return None
+    # remove a extensão (.exe, .EXE, etc.)
+    base = re.sub(r"\.[A-Za-z0-9]+$", "", arquivo)
+    return base or None
 
-def hexdump_bytes(buf: bytes, largura: int = 16) -> str:
-    linhas = []
-    for off in range(0, len(buf), largura):
-        bloco = buf[off:off+largura]
-        hexes  = " ".join(f"{b:02X}" for b in bloco)
-        ascii_ = "".join(chr(b) if 32 <= b < 127 else "." for b in bloco)
-        linhas.append(f"{off:08X}  {hexes:<{largura*3}}  |{ascii_}|")
-    return "\n".join(linhas)
+df["software"] = df[COLPATH].apply(extrair_software)
 
-def gerar_mbr_bytes_completo() -> tuple[bytes, str]:
-    """
-    Monta um MBR de laboratório (512 B):
-      - 0..439  : boot code sintético
-      - 440..443: assinatura de disco (4 bytes aleatórios)
-      - 444..445: reservados (0x0000)
-      - 446..461: 1 entrada de partição (fake)
-      - 462..509: zero
-      - 510..511: 0x55AA
-    Retorna (bytes_mbr, assinatura_disco_hex)
-    """
-    buf = bytearray(TAMANHO_SETOR)
+# ===== 3) Remover “lixo” por palavras-chave (ajuste à sua realidade) =====
+# Ex.: componentes internos do Visual Studio/.NET que você não quer contar
+deny_keywords = [
+    "msbuild", "vbcsc", "servicehub", "devenv", "dotnet",
+    "mscorsvw", "ngen", "vctip", "perfwatson", "vsai",
+    "sqlpackage", "vstest", "teamfoundation", "vsixinstaller"
+]
+# remove nulos, trims e filtra por denylist
+df["software"] = df["software"].dropna()
+mask_deny = df["software"].str.lower().apply(
+    lambda x: any(k in x for k in deny_keywords)
+)
+df_limpo = df.loc[~mask_deny].copy()
 
-    # "boot code" sintético e determinístico
-    for i in range(440):
-        buf[i] = (0x31 + 7*i) & 0xFF
+# ===== 4) Salvar tabela completa com coluna nova =====
+df_limpo.to_excel(ARQ_OUT_COMPLETO, index=False)
 
-    # assinatura de disco (4 bytes aleatórios) + 2 bytes reservados
-    assinatura_disco = os.urandom(4)
-    buf[440:444] = assinatura_disco
-    buf[444:446] = b"\x00\x00"
+# ===== 5) Gerar listas úteis =====
+# únicos (ordenados A→Z)
+unicos = (
+    df_limpo["software"]
+    .dropna()
+    .drop_duplicates()
+    .sort_values()
+    .reset_index(drop=True)
+    .to_frame()
+)
+unicos.columns = ["software"]
+unicos.to_excel(ARQ_OUT_UNICOS, index=False)
 
-    # 1ª entrada de partição fake (16 bytes) em 446
-    entry = bytearray(16)
-    entry[0] = 0x80                               # ativa
-    entry[4] = 0x07                               # tipo NTFS (apenas para teste)
-    entry[8:12]  = (0x00008000).to_bytes(4, "little")  # LBA inicial
-    entry[12:16] = (0x00100000).to_bytes(4, "little")  # tamanho (setores)
-    buf[446:462] = entry
+# ranking (mais frequentes no topo)
+freq = (
+    df_limpo["software"]
+    .value_counts()
+    .rename_axis("software")
+    .reset_index(name="qtd")
+)
+freq.to_excel(ARQ_OUT_FREQUENCIA, index=False)
 
-    buf[-2:] = ASSINATURA_FINAL                   # 55 AA
+print("OK!")
+print(f"- {ARQ_OUT_COMPLETO}")
+print(f"- {ARQ_OUT_UNICOS}")
+print(f"- {ARQ_OUT_FREQUENCIA}")
 
-    return bytes(buf), assinatura_disco.hex().upper()
-
-# ---------------------------- Artefatos ----------------------------
-def criar_loader_efi(caminhos, log):
-    p = os.path.join(caminhos["efi"], "bootx64.efi")
-    with open(p, "wb") as f: f.write(os.urandom(4096))
-    log.write(f"[{agora()}] Loader EFI criado: {p}\n")
-    return {"caminho": p, "sha256": hash_sha256(p)}
-
-def criar_mbr_completo(caminhos, log):
-    caminho = os.path.join(caminhos["efi"], "MBR.bin")
-    mbr_bytes, assinatura_disco_hex = gerar_mbr_bytes_completo()
-
-    with open(caminho, "wb") as f: f.write(mbr_bytes)
-
-    ok_tamanho   = (len(mbr_bytes) == TAMANHO_SETOR)
-    ok_ass_final = (mbr_bytes[-2:] == ASSINATURA_FINAL)
-
-    # hexdump e hex integral
-    dump = hexdump_bytes(mbr_bytes)
-    dump_path = os.path.join(caminhos["logs"], "MBR_dump.txt")
-    with open(dump_path, "w", encoding="utf-8") as f:
-        f.write(f"# MBR (hexdump) - gerado em {agora()}\n")
-        f.write(dump + "\n")
-
-    log.write(f"[{agora()}] MBR criado: {caminho}\n")
-    log.write(f"[{agora()}] Tamanho=512({ok_tamanho}) | AssinaturaFinal=55AA({ok_ass_final}) | AssinaturaDisco=0x{assinatura_disco_hex}\n")
-    log.write(f"[{agora()}] Hexdump: {dump_path}\n")
-
-    return {
-        "caminho": caminho,
-        "sha256": hashlib.sha256(mbr_bytes).hexdigest(),
-        "tamanho_bytes": TAMANHO_SETOR,
-        "assinatura_final": ASSINATURA_FINAL.hex().upper(),   # "55AA"
-        "assinatura_disco": assinatura_disco_hex,             # "XXXXXXXX"
-        "hex_completo": mbr_bytes.hex().upper(),
-        "preview_primeiros_32": mbr_bytes[:32].hex().upper(),
-        "preview_ultimos_32":   mbr_bytes[-32:].hex().upper(),
-        "dump_path": dump_path
-    }, ok_tamanho, ok_ass_final
-
-def criar_driver(caminhos, log):
-    p = os.path.join(caminhos["drivers"], "driver.sys")
-    with open(p, "w", encoding="utf-8") as f:
-        f.write("DRIVER_DE_TESTE\nNao eh um driver real.\n")
-    log.write(f"[{agora()}] Driver criado: {p}\n")
-    return {"caminho": p, "sha256": hash_sha256(p)}
-
-def criar_readme(caminhos, log):
-    p = os.path.join(caminhos["base"], "SIM", "README.txt")
-    with open(p, "w", encoding="utf-8") as f:
-        f.write("Artefatos de LAB criados apenas em arquivos dentro de ./SIM.\n"
-                "Nenhum componente do sistema/boot foi acessado.\n")
-    log.write(f"[{agora()}] README: {p}\n")
-    return {"caminho": p, "sha256": hash_sha256(p)}
-
-def criar_arquivos_bloqueados(caminhos, log, quantidade):
-    iocs = []
-    for i in range(quantidade):
-        p = os.path.join(caminhos["usuario"], f"documento_{i}.txt")
-        with open(p, "w", encoding="utf-8") as f: f.write("conteudo de exemplo\n")
-        q = p + ".LOCKED"
-        with open(q, "w", encoding="utf-8") as f: f.write("copia bloqueada para LAB\n")
-        log.write(f"[{agora()}] Criados: {p} / {q}\n")
-        iocs.extend([{"caminho": p, "sha256": hash_sha256(p)},
-                     {"caminho": q, "sha256": hash_sha256(q)}])
-    return iocs
-
-# ---------------------------- Orquestração ----------------------------
-def simular(qtd_arquivos=10, etapas=("efi","mbr","driver","readme","lock")):
-    caminhos = garantir_estrutura()
-    eventos = os.path.join(caminhos["logs"], "events.txt")
-    iocs_js = os.path.join(caminhos["logs"], "iocs.json")
-
-    iocs = []
-    ok_tam = ok_ass = True
-    mbr_info = None
-
-    with open(eventos, "w", encoding="utf-8") as log:
-        log.write(f"[{agora()}] Início\n")
-
-        if "efi" in etapas:    iocs.append(criar_loader_efi(caminhos, log))
-        if "mbr" in etapas:
-            mbr_info, ok_tam, ok_ass = criar_mbr_completo(caminhos, log)
-            iocs.append(mbr_info)
-        if "driver" in etapas: iocs.append(criar_driver(caminhos, log))
-        if "readme" in etapas: iocs.append(criar_readme(caminhos, log))
-        if "lock" in etapas:   iocs.extend(criar_arquivos_bloqueados(caminhos, log, qtd_arquivos))
-
-        with open(iocs_js, "w", encoding="utf-8") as f:
-            json.dump({"gerado_em": agora(), "artefatos": iocs}, f, indent=2, ensure_ascii=False)
-        log.write(f"[{agora()}] IOCS: {iocs_js}\n")
-        log.write(f"[{agora()}] Fim\n")
-
-    # Saída console
-    total = len(iocs)
-    print("\n[+] Concluído")
-    print(f"    Eventos : {eventos}")
-    print(f"    IOCS    : {iocs_js}")
-    if mbr_info:
-        print(f"    MBR.bin : 512 bytes = {'OK' if ok_tam else 'ERRO'} | assinatura_final = {mbr_info['assinatura_final']} | assinatura_disco = 0x{mbr_info['assinatura_disco']}")
-        print(f"              prévia: {mbr_info['preview_primeiros_32'][:64]} ... {mbr_info['preview_ultimos_32'][-64:]}")
-        print(f"              hexdump: {mbr_info['dump_path']}")
-    print(f"    Artefatos: {total}\n")
-
-def parsear_etapas(txt):
-    if txt.lower() == "all": return ("efi","mbr","driver","readme","lock")
-    return tuple(p.strip().lower() for p in txt.split(",") if p.strip())
-
-def main():
-    ap = argparse.ArgumentParser(description="Gera artefatos de LAB (apenas arquivos) em ./SIM.")
-    ap.add_argument("--arquivos", type=int, default=10, help="Quantidade em 'lock'.")
-    ap.add_argument("--etapas", default="all", help="all ou lista: efi,mbr,driver,readme,lock")
-    args = ap.parse_args()
-    simular(qtd_arquivos=args.arquivos, etapas=parsear_etapas(args.etapas))
-
-if __name__ == "__main__":
-    main()
-    input("\n[Pressione ENTER para sair]")
+allow_paths = ["\\program files\\pactual\\", "\\program files (x86)\\pactual\\"]
+keep = df[COLPATH].str.lower().str.contains("|".join(map(re.escape, allow_paths)))
+df_limpo = df.loc[keep].copy()
