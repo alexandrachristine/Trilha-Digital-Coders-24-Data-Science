@@ -1,83 +1,257 @@
-import pandas as pd
-import re
+<!DOCTYPE html>
+<html dir="ltr" xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>[Alert] CTI Report | Credential Leak</title>
+  <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;600&display=swap" rel="stylesheet">
 
-ARQ_IN  = "Blocked_Softwares.xlsx"          # ajuste o nome se precisar
-ABA     = 0                                  # 0 = primeira aba; ou "Sheet1"
-COLPATH = "ori_soft"                          # nome da coluna com o path
+  <style>
+    body {
+      font-family: 'Montserrat', Arial, sans-serif;
+      margin: 0;
+      padding: 0;
+      background-color: #f4f4f4;
+      color: #333333;
+    }
 
-ARQ_OUT_COMPLETO   = "Blocked_Softwares_Limpo.xlsx"
-ARQ_OUT_UNICOS     = "softwares_unicos.xlsx"
-ARQ_OUT_FREQUENCIA = "softwares_frequencia.xlsx"
+    .wrapper {
+      max-width: 700px;
+      margin: 24px auto;
+      background-color: #ffffff;
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: 0 6px 18px rgba(0,0,0,0.08);
+      border: 1px solid #e6e6e6;
+    }
 
-# ===== 1) Ler arquivo =====
-df = pd.read_excel(ARQ_IN, sheet_name=ABA)
+    .preheader {
+      font-size: 11px;
+      color: transparent;
+      height: 0;
+      overflow: hidden;
+      max-height: 0;
+      line-height: 0;
+    }
 
-# Se o cabeçalho estiver diferente, renomeie:
-# df = df.rename(columns={"A": "ori_soft"})
+    .banner {
+      width: 100%;
+      display: block;
+      object-fit: cover;
+      max-height: 140px;
+    }
 
-# ===== 2) Extrair apenas o "software" do fim do path =====
-def extrair_software(s):
-    if pd.isna(s): 
-        return None
-    s = str(s)
-    # limpa chaves e parênteses
-    s = s.replace("{","").replace("}","").replace("(","").replace(")","")
-    s = s.replace("/", "\\")
-    # pega o último trecho após a última barra
-    arquivo = s.split("\\")[-1].strip()
-    # mantém só .exe (opcional) — comente a linha abaixo se quiser todas as extensões
-    if not re.search(r"\.exe$", arquivo, flags=re.I):
-        return None
-    # remove a extensão (.exe, .EXE, etc.)
-    base = re.sub(r"\.[A-Za-z0-9]+$", "", arquivo)
-    return base or None
+    .header {
+      background-color: #1f2937;
+      color: #ffffff;
+      text-align: center;
+      padding: 18px 20px;
+    }
 
-df["software"] = df[COLPATH].apply(extrair_software)
+    .header h1 {
+      font-size: 20px;
+      margin: 0;
+      font-weight: 600;
+      letter-spacing: 0.2px;
+    }
 
-# ===== 3) Remover “lixo” por palavras-chave (ajuste à sua realidade) =====
-# Ex.: componentes internos do Visual Studio/.NET que você não quer contar
-deny_keywords = [
-    "msbuild", "vbcsc", "servicehub", "devenv", "dotnet",
-    "mscorsvw", "ngen", "vctip", "perfwatson", "vsai",
-    "sqlpackage", "vstest", "teamfoundation", "vsixinstaller"
-]
-# remove nulos, trims e filtra por denylist
-df["software"] = df["software"].dropna()
-mask_deny = df["software"].str.lower().apply(
-    lambda x: any(k in x for k in deny_keywords)
-)
-df_limpo = df.loc[~mask_deny].copy()
+    .meta {
+      padding: 14px 20px;
+      background: linear-gradient(90deg, #fafafa, #ffffff);
+      border-bottom: 1px solid #efefef;
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
 
-# ===== 4) Salvar tabela completa com coluna nova =====
-df_limpo.to_excel(ARQ_OUT_COMPLETO, index=False)
+    .meta .item {
+      min-width: 160px;
+      font-size: 13px;
+      color: #555;
+    }
 
-# ===== 5) Gerar listas úteis =====
-# únicos (ordenados A→Z)
-unicos = (
-    df_limpo["software"]
-    .dropna()
-    .drop_duplicates()
-    .sort_values()
-    .reset_index(drop=True)
-    .to_frame()
-)
-unicos.columns = ["software"]
-unicos.to_excel(ARQ_OUT_UNICOS, index=False)
+    .content {
+      padding: 20px 24px;
+    }
 
-# ranking (mais frequentes no topo)
-freq = (
-    df_limpo["software"]
-    .value_counts()
-    .rename_axis("software")
-    .reset_index(name="qtd")
-)
-freq.to_excel(ARQ_OUT_FREQUENCIA, index=False)
+    .content h2 {
+      font-size: 18px;
+      margin: 0 0 8px 0;
+      color: #222;
+    }
 
-print("OK!")
-print(f"- {ARQ_OUT_COMPLETO}")
-print(f"- {ARQ_OUT_UNICOS}")
-print(f"- {ARQ_OUT_FREQUENCIA}")
+    .content p {
+      font-size: 14px;
+      margin: 10px 0;
+      line-height: 1.6;
+      color: #333;
+    }
 
-allow_paths = ["\\program files\\pactual\\", "\\program files (x86)\\pactual\\"]
-keep = df[COLPATH].str.lower().str.contains("|".join(map(re.escape, allow_paths)))
-df_limpo = df.loc[keep].copy()
+    .section {
+      margin-top: 14px;
+    }
+
+    .section h3 {
+      font-size: 15px;
+      margin-bottom: 8px;
+      color: #111827;
+    }
+
+    .list {
+      margin: 0 0 0 18px;
+    }
+
+    .badge {
+      display: inline-block;
+      padding: 4px 8px;
+      font-size: 12px;
+      border-radius: 999px;
+      background: #f1f5f9;
+      color: #0f172a;
+    }
+
+    .ioc, .evidence {
+      background: #fafafa;
+      border: 1px solid #eee;
+      padding: 10px;
+      border-radius: 6px;
+      font-family: monospace;
+      font-size: 13px;
+      white-space: pre-wrap;
+    }
+
+    .recommendations ul {
+      margin: 6px 0 12px 18px;
+    }
+
+    .footer {
+      background-color: #f4f4f4;
+      text-align: center;
+      padding: 14px 20px;
+      font-size: 12px;
+      color: #666;
+      border-top: 1px solid #eee;
+    }
+
+    .contact {
+      font-weight: 600;
+      color: #0b6ef6;
+    }
+
+    @media (max-width: 520px) {
+      .meta { flex-direction: column; }
+      .meta .item { min-width: auto; }
+      .wrapper { margin: 12px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrapper">
+
+    <!-- Texto invisível de preheader (usado em emails) -->
+    <div class="preheader">[Alert] Credencial vazada detectada — ações recomendadas incluídas.</div>
+
+    <!-- banner opcional -->
+    <img class="banner" src="https://d14eec6sk3sfq8.cloudfront.net/banner.jpg" alt="Banner">
+
+    <div class="header">
+      <h1>Relatório de Segurança — Credencial Exposta</h1>
+    </div>
+
+    <div class="meta">
+      <div class="item"><strong>Empresa:</strong> <span class="badge">{{COMPANY}}</span></div>
+      <div class="item"><strong>Activo / Sistema:</strong> <span class="badge">{{ASSET}}</span></div>
+      <div class="item"><strong>Data da detecção:</strong> <span class="badge">{{DATE}}</span></div>
+      <div class="item"><strong>Gravidade:</strong> <span class="badge">{{SEVERITY}}</span></div>
+    </div>
+
+    <div class="content">
+      <h2>Resumo executivo</h2>
+      <p>
+        Detectamos a exposição de uma credencial associada ao ativo/sistema indicado acima.
+        Este relatório descreve as evidências encontradas, o possível impacto, recomendações imediatas e ações de remediação para reduzir risco e facilitar investigação.
+        O conteúdo abaixo é genérico e pode ser adaptado para qualquer organização substituindo os placeholders.
+      </p>
+
+      <div class="section">
+        <h3>Descrição do incidente</h3>
+        <p>
+          Uma credencial (usuário/senha ou token de acesso) foi encontrada em fonte(s) pública(s) ou repositório(s) acessível(eis).
+          A exposição pode ter ocorrido por: vazamento em serviço de terceiros, repositório público, comprometimento de conta de e-mail, ou compartilhamento inadvertido.
+        </p>
+      </div>
+
+      <div class="section">
+        <h3>Impacto potencial</h3>
+        <ul class="list">
+          <li>Acesso não autorizado a sistemas internos ou serviços na nuvem.</li>
+          <li>Exfiltração de dados sensíveis e/ou modificação de informações.</li>
+          <li>Movimento lateral dentro da rede (se a conta possuir privilégios elevados).</li>
+          <li>Comprometimento reputacional e riscos regulatórios.</li>
+        </ul>
+      </div>
+
+      <div class="section">
+        <h3>Evidências & IOCs (Indicators of Compromise)</h3>
+        <p>Fontes onde a credencial foi identificada / amostra:</p>
+        <div class="evidence">
+{{EVIDENCE_SAMPLE}}
+        </div>
+        <p>Recomendamos coletar e preservar logs de: autenticação, VPN, proxies, e serviços afetados para correlacionar atividade.</p>
+      </div>
+
+      <div class="section">
+        <h3>Recomendações imediatas (prioridade alta)</h3>
+        <div class="recommendations">
+          <ul>
+            <li>Reset imediato da(s) credencial(is) afetada(s) e revogação de tokens associados.</li>
+            <li>Forçar expiração de sessão e logout de dispositivos autenticados.</li>
+            <li>Habilitar e exigir autenticação multifator (MFA) para a conta e para todos os acessos administrativos.</li>
+            <li>Isolar o ativo/sistema afetado até completar investigação inicial (se aplicável).</li>
+            <li>Investigar logs de acesso e buscar atividades anômalas no período anterior à data de detecção.</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="section">
+        <h3>Ações de remediação e mitigação (médio prazo)</h3>
+        <ul class="list">
+          <li>Auditar permissões da conta e aplicar princípio do menor privilégio.</li>
+          <li>Rotina de rotação de credenciais e tokens (segurança em camadas).</li>
+          <li>Rever políticas de armazenamento seguro de segredos (ex.: usar cofre de segredos — HashiCorp Vault, AWS Secrets Manager, Azure Key Vault).</li>
+          <li>Treinamento para equipe sobre boas práticas (não commitar credenciais em repositórios públicos).</li>
+          <li>Ativar monitoramento contínuo e alertas para uso de credenciais e mudanças de configuração.</li>
+        </ul>
+      </div>
+
+      <div class="section">
+        <h3>Próximos passos sugeridos</h3>
+        <ol class="list">
+          <li>Executar investigação forense básica: colher logs, snapshot do sistema e cópias de evidência.</li>
+          <li>Verificar se a credencial foi usada por agentes desconhecidos (IP, hora, atividade executada).</li>
+          <li>Notificar times internos (SOC, TI, Compliance) e, se aplicável, partes terceiras/ou clientes afetados.</li>
+          <li>Atualizar plano de resposta a incidentes com lições aprendidas.</li>
+        </ol>
+      </div>
+
+      <div class="section">
+        <h3>Contatos</h3>
+        <p>Equipe de Resposta: <span class="contact">{{CTI_CONTACT_NAME}} — {{CTI_CONTACT_EMAIL}}</span></p>
+        <p>Se você recebeu este relatório e não pertence à equipe indicada, por favor encaminhe ao responsável de segurança da informação da sua organização.</p>
+      </div>
+
+      <div class="section">
+        <h3>Notas finais</h3>
+        <p>
+          Este relatório é genérico por design e visa orientar ações rápidas e replicáveis em diferentes ambientes.
+          Substitua os placeholders (entre `{{ }}`) pelos valores reais antes de distribuir.
+        </p>
+      </div>
+    </div>
+
+    <div class="footer">
+      <p>Relatório gerado por <strong>Threat Intelligence</strong> — Equipe de Segurança da Informação • {{DATE}}</p>
+    </div>
+  </div>
+</body>
+</html>
